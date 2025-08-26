@@ -156,8 +156,8 @@ def filter_data(df: pd.DataFrame, params: FilterParams) -> pd.DataFrame:
         filtered = filtered[filtered["subTypeName"] == params.subtype]
     
     # Train filtering
-    if params.train != "All Trains" and "pnrUtsNo" in filtered.columns:
-        filtered = filtered[filtered["pnrUtsNo"] == params.train]
+    if params.train != "All Trains" and "trainNameForReport" in filtered.columns:
+        filtered = filtered[filtered["trainNameForReport"] == params.train]
     
     # Year filtering
     if params.year != "All Years" and "file_year" in filtered.columns:
@@ -232,9 +232,19 @@ async def get_filter_options(cache_key: str):
     df = data_cache[cache_key]['dataframe']
     file_years = data_cache[cache_key]['file_years']
     
+    # Sort subtypes by frequency (most complaints first)
+    subtype_counts = df["subTypeName"].value_counts()
+    sorted_subtypes = ["All Categories"] + subtype_counts.index.tolist()
+    
+    # Use trainNameForReport instead of pnrUtsNo for better data availability
+    train_options = ["All Trains"]
+    if "trainNameForReport" in df.columns:
+        train_counts = df["trainNameForReport"].value_counts()
+        train_options += train_counts.index.tolist()
+    
     return {
-        "subtypes": ["All Categories"] + sorted(df["subTypeName"].dropna().unique().tolist()),
-        "trains": ["All Trains"] + sorted([str(t) for t in df["pnrUtsNo"].dropna().unique().tolist()]) if "pnrUtsNo" in df.columns else ["All Trains"],
+        "subtypes": sorted_subtypes,
+        "trains": train_options,
         "years": ["All Years"] + sorted(file_years, reverse=True),
         "months": [f"{calendar.month_name[m.month]} {m.year}" for m in sorted(df["month_year"].dropna().unique())] if "month_year" in df.columns else []
     }
