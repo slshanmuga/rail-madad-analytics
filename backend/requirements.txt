@@ -1,0 +1,23 @@
+# FastAPI and ASGI server
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+
+# Data processing
+pandas==2.1.4
+numpy==1.25.2
+
+# File handling
+python-multipart==0.0.6
+
+# Type hints and validation
+pydantic==2.5.1
+typing-extensions==4.8.0
+
+# Development and testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+httpx==0.25.2
+
+# Optional: For production deployment
+# gunicorn==21.2.0
+# python-dotenv==1.0.0
