@@ -213,14 +213,24 @@ async def upload_files(files: List[UploadFile] = File(...)):
     if missing:
         raise HTTPException(status_code=400, detail=f"Missing required columns: {', '.join(sorted(missing))}")
     
+    # Convert numpy/pandas types to native Python types for JSON serialization
+    total_records = int(combined_df.shape[0])
+    
+    # Handle date range conversion
+    date_range = {"min": None, "max": None}
+    if "incident_date" in combined_df.columns:
+        min_date = combined_df["incident_date"].min()
+        max_date = combined_df["incident_date"].max()
+        if pd.notna(min_date):
+            date_range["min"] = min_date.strftime('%Y-%m-%d')
+        if pd.notna(max_date):
+            date_range["max"] = max_date.strftime('%Y-%m-%d')
+    
     return {
         "cache_key": cache_key,
-        "total_records": len(combined_df),
-        "file_years": file_years,
-        "date_range": {
-            "min": combined_df["incident_date"].min().isoformat() if "incident_date" in combined_df.columns else None,
-            "max": combined_df["incident_date"].max().isoformat() if "incident_date" in combined_df.columns else None
-        }
+        "total_records": total_records,
+        "file_years": [int(year) for year in file_years],  # Ensure integers
+        "date_range": date_range
     }
 
 @app.get("/filter-options/{cache_key}")
@@ -234,19 +244,28 @@ async def get_filter_options(cache_key: str):
     
     # Sort subtypes by frequency (most complaints first)
     subtype_counts = df["subTypeName"].value_counts()
-    sorted_subtypes = ["All Categories"] + subtype_counts.index.tolist()
+    sorted_subtypes = ["All Categories"] + [str(item) for item in subtype_counts.index.tolist()]
     
     # Use trainNameForReport instead of pnrUtsNo for better data availability
     train_options = ["All Trains"]
     if "trainNameForReport" in df.columns:
         train_counts = df["trainNameForReport"].value_counts()
-        train_options += train_counts.index.tolist()
+        train_options += [str(item) for item in train_counts.index.tolist()]
+    
+    # Convert file_years to native Python integers
+    years_list = ["All Years"] + [str(year) for year in sorted([int(year) for year in file_years], reverse=True)]
+    
+    # Handle months conversion
+    months_list = []
+    if "month_year" in df.columns:
+        unique_months = df["month_year"].dropna().unique()
+        months_list = [f"{calendar.month_name[m.month]} {m.year}" for m in sorted(unique_months)]
     
     return {
         "subtypes": sorted_subtypes,
         "trains": train_options,
-        "years": ["All Years"] + sorted(file_years, reverse=True),
-        "months": [f"{calendar.month_name[m.month]} {m.year}" for m in sorted(df["month_year"].dropna().unique())] if "month_year" in df.columns else []
+        "years": years_list,
+        "months": months_list
     }
 
 @app.post("/analytics/{cache_key}")
@@ -417,35 +436,58 @@ async def get_timeline_data(
         resample_rule = "MS"
         time_unit = "Monthly"
     
-    # Multi-year timeline
+    # Multi-year timeline - overlapping approach for easier comparison
     if len(file_years) > 1 and params.year == "All Years":
-        all_timelines = []
+        # Create a comprehensive period range covering all years
+        all_periods = set()
+        year_data_dict = {}
         
-        for year in file_years:
+        # First pass: collect all periods and data for each year
+        for year in sorted(file_years):
             year_data = filtered[filtered["file_year"] == year]
             if not year_data.empty:
-                # Filter valid dates and resample
                 year_clean = year_data[year_data["createdOn"].notna()].copy()
-                year_clean = year_clean.set_index("createdOn")
-                timeline = year_clean.resample(resample_rule).size().reset_index(name="incidents")
-                
-                for _, point in timeline.iterrows():
-                    if date_range_days <= 90:
-                        period = point["createdOn"].strftime("%b %d")
-                    else:
-                        period = point["createdOn"].strftime("%B")
+                if not year_clean.empty:
+                    year_clean = year_clean.set_index("createdOn")
+                    timeline = year_clean.resample(resample_rule).size().reset_index(name="incidents")
                     
-                    all_timelines.append(TimelinePoint(
-                        date=point["createdOn"].isoformat(),
-                        incidents=int(point["incidents"]),
-                        period=period,
-                        year=str(year)
-                    ))
+                    # Create period mapping for this year
+                    year_periods = {}
+                    for _, point in timeline.iterrows():
+                        if date_range_days <= 90:
+                            period_key = point["createdOn"].strftime("%b")  # Just month name
+                        else:
+                            period_key = point["createdOn"].strftime("%b")  # Month name for overlapping
+                        
+                        period_sort_key = point["createdOn"].strftime("%m")  # For sorting
+                        all_periods.add((period_key, period_sort_key))
+                        year_periods[period_key] = int(point["incidents"])
+                    
+                    year_data_dict[year] = year_periods
+        
+        # Sort periods chronologically
+        sorted_periods = sorted(all_periods, key=lambda x: x[1])  # Sort by month number
+        
+        # Create timeline data with overlapping structure
+        timeline_data = []
+        for period_key, _ in sorted_periods:
+            period_entry = {"period": period_key}
+            
+            # Add data for each year
+            for year in sorted(file_years):
+                year_key = f"year_{year}"
+                incidents = year_data_dict.get(year, {}).get(period_key, 0)
+                period_entry[year_key] = incidents
+            
+            # Only include periods where at least one year has data
+            if any(period_entry[f"year_{year}"] > 0 for year in file_years):
+                timeline_data.append(period_entry)
         
         return {
-            "timeline": [point.dict() for point in all_timelines],
+            "timeline": timeline_data,
             "multi_year": True,
-            "time_unit": time_unit
+            "time_unit": time_unit,
+            "years": [str(year) for year in sorted(file_years)]  # Available years for the frontend
         }
     
     else:
